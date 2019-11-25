@@ -21,6 +21,8 @@
 // Variables 
 unsigned long   currentMillis = 0;
 unsigned long   previousStatusMillis = 0;
+unsigned long   connectionFailures;
+unsigned long   failureTimeout = millis();
 
 
 const char * projectName = "NodeMCU - Custom Device";
@@ -29,8 +31,8 @@ void handleRoot();
 void handleNotFound();
 void handleControl();
 void handleSSDP();
-void sendStatus();
-void runEveryMinute();
+void runEvery5Minutes();
+boolean sendStatus();
 String uptime();
 
 ESP8266WebServer server(80);
@@ -53,6 +55,7 @@ void setup() {
   server.on("/", handleRoot);
   server.on("/description.xml", handleSSDP);
   server.on("/control", handleControl);
+  server.on("/refresh", []{ sendStatus(); });
 
   server.onNotFound(handleNotFound);
 
@@ -74,65 +77,120 @@ void setup() {
   SSDP.begin();
   Serial.println("Done");
 
+  sendStatus();
 }
 
 void loop() {
   server.handleClient();  
-  runEveryMinute();
+  runEvery5Minutes();
 }
 
-void runEveryMinute() {
+void runEvery5Minutes() {
   currentMillis = millis();
-  if (millis() - previousStatusMillis >= 60000) {
-    previousStatusMillis += 60000;
-
-    int currentState1 = digitalRead(RELAY1);
-    int currentState2 = digitalRead(RELAY2);
-
-    String message = "";  
-    message += "{\"type\":\"relay\", \"number\":\"1\", \"power\":\"" + String(currentState1 == 0? "on" : "off") + "\"}";
-    message += "{\"type\":\"relay\", \"number\":\"2\", \"power\":\"" + String(currentState2 == 0? "on" : "off") + "\"}";
-    message += "{\"type\":\"uptime\", \"value\":\"" + uptime() + "\"}";
-    message += "{\"type\":\"ip\", \"value\":\"" + WiFi.localIP().toString() + "\"}";
-    message += "]";
-  //              client.print(String("POST ") + url + " HTTP/1.1\r\n" +
-  //              "Host: " + host + ":" + Settings.haPort + "\r\n" + authHeader +
-  //              "Content-Type: application/json;charset=utf-8\r\n" +
-  //              "Content-Length: " + message.length() + "\r\n" +
-  //              "Server: " + projectName + "\r\n" +
-  //              "Connection: close\r\n\r\n" +
-  //              message + "\r\n");
-
-  Serial.println("Sending Status to Controller");
-  Serial.println(message);
-  
+  if (millis() - previousStatusMillis >= 300000) {
+    previousStatusMillis += 300000;
+    sendStatus();
   }
-  
 }
 
-void sendStatus(int sensor) {
-    String message;
-    int currentState = digitalRead(sensor);
-    message = "{\"type\":\"relay\", \"number\":\"" + String(sensor) + "\", \"power\":\"" + String(currentState == 0? "on" : "off") + "\"}";  
-    server.send(200, "application/json", message);
+boolean sendStatus() {
+  String authHeader = "";
+  boolean success = false;
+  String message;
+    
+  if (connectionFailures >= 3) { // Too many errors; Trying not to get stuck
+    if (millis() - failureTimeout < 1800000) {
+      Serial.println("Too many errors; Trying not to get stuck");
+      return false;
+    } else {
+      failureTimeout = millis();
+    }
+  }
+
+    
+  WiFiClient client;
+
+  const char* host = SMARTTHINGS_IP;
+
+  Serial.print(host);
+
+  if(!client.connect( host, SMARTTHINGS_PORT)){
+    Serial.println("Wifi Client Error!");
+    connectionFailures++;
+    return false;
+  }
+
+  if (connectionFailures)
+    connectionFailures = 0;
+
+  int currentState1 = digitalRead(RELAY1);
+  int currentState2 = digitalRead(RELAY2);
+
+  message = "{";
+  message += "\"relaySwitch1\":\"" + String(currentState1 == 0? "on" : "off") + "\",";
+  message += "\"relaySwitch2\":\"" + String(currentState2 == 0? "on" : "off") + "\",";
+  message += "\"uptime\":\"" + uptime() + "\",";
+  message += "\"ip\":\"" + WiFi.localIP().toString() + "\"";
+  message += "}";
+  
+
+  String url = F("/");
+
+  client.print(String("POST ") + url + " HTTP/1.1\r\n" +
+    "Host: " + host + ":" + SMARTTHINGS_PORT + "\r\n" + authHeader +
+    "Content-Type: application/json;charset=utf-8\r\n" +
+    "Content-Length: " + message.length() + "\r\n" +
+    "Server: " + projectName + "\r\n" +
+    "Connection: close\r\n\r\n" +
+    message + "\r\n");
+
+    
+
+  unsigned long timer = millis() + 200;
+  while (!client.available() && millis() < timer)
+    delay(1);
+
+  // Read all the lines of the reply from server and print them to Serial
+  while (client.available()) {
+    String line = client.readStringUntil('\n');
+    if (line.substring(0, 20) == "HTTP/1.1 202 ACCEPTED")
+    {
+      Serial.print("Packet Sent!");
+      success = true;
+    } else {
+      Serial.println(line);
+    }
+    delay(1);
+  }
+
+  client.flush();
+  client.stop();
+
+  return success;
 }
 
 void handleControl() {
   String value;
+  String message;
+  byte state;
 
-    if (server.hasArg("relay1")) { //Switch 1
-      value = server.arg("relay1");
-      byte state = (value == "on") ? LOW : HIGH;
-      digitalWrite(RELAY1, state);
-      sendStatus(RELAY1);
-    }
+  if (server.hasArg("relaySwitch1")) { //Switch 1
+    value = server.arg("relaySwitch1");
+    state = (value == "on") ? LOW : HIGH;
+    digitalWrite(RELAY1, state);
+    message += "{\"relaySwitch1\":\"" + String(state == 0? "on" : "off") + "\"}";
+    // sendStatus(RELAY1);
+  }
 
-    if (server.hasArg("relay2")) { //Switch 2
-      value = server.arg("relay2");
-      byte state = (value == "on") ? LOW : HIGH;
-      digitalWrite(RELAY2, state);
-      sendStatus(RELAY2);
-    }    
+  if (server.hasArg("relaySwitch2")) { //Switch 2
+    value = server.arg("relaySwitch2");
+    state = (value == "on") ? LOW : HIGH;
+    digitalWrite(RELAY2, state);
+    message += "{\"relaySwitch2\":\"" + String(state == 0? "on" : "off") + "\"}";
+    // sendStatus(RELAY2);
+  }    
+
+  server.send(200, "application/json", message);
 
 }
 
@@ -148,10 +206,7 @@ void handleSSDP() {
   SSDP.schema(server.client());
 }
 
-
-
-String uptime()
-{
+String uptime(){
   currentMillis = millis();
   long days = 0;
   long hours = 0;

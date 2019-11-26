@@ -10,10 +10,17 @@
 #include <ESP8266WebServer.h>
 #include <ESP8266SSDP.h>
 
+#include <Adafruit_Sensor.h>
+#include <DHT.h>
+#include <DHT_U.h>
 
+#define DHTPIN        D1
+#define DHTTYPE       DHT22     // DHT 22 (AM2302)
+DHT_Unified dht(DHTPIN, DHTTYPE);
 // Define All Devices
-#define RELAY1  D0  //Bultin LED
-#define RELAY2  D4  //Bultin ESP12 LED
+#define RELAY1        D0  //Bultin LED
+#define RELAY2        D4  //Bultin ESP12 LED
+#define ILLUMINANCE   A0
 
 #define SMARTTHINGS_IP    "192.168.10.20"
 #define SMARTTHINGS_PORT  39500
@@ -32,8 +39,10 @@ void handleNotFound();
 void handleControl();
 void handleSSDP();
 void runEvery5Minutes();
+void runEveryMinute();
 boolean sendStatus();
 String uptime();
+int illuminance();
 
 ESP8266WebServer server(80);
 
@@ -82,7 +91,24 @@ void setup() {
 
 void loop() {
   server.handleClient();  
+  runEveryMinute();
   runEvery5Minutes();
+
+}
+
+int illuminance() {
+  int sensor = analogRead(ILLUMINANCE);
+  int data = (int) map(sensor, 0, 1023, 1023, 0); 
+  return data;
+}
+
+void runEveryMinute(){
+  return;
+  // currentMillis = millis();
+  // if (millis() - previousStatusMillis >= 60000) {
+  //   previousStatusMillis += 60000;
+  // }
+  
 }
 
 void runEvery5Minutes() {
@@ -129,6 +155,7 @@ boolean sendStatus() {
   message = "{";
   message += "\"relaySwitch1\":\"" + String(currentState1 == 0? "on" : "off") + "\",";
   message += "\"relaySwitch2\":\"" + String(currentState2 == 0? "on" : "off") + "\",";
+  message += "\"illuminance1\":\"" + String(illuminance()) + "\",";
   message += "\"uptime\":\"" + uptime() + "\",";
   message += "\"ip\":\"" + WiFi.localIP().toString() + "\"";
   message += "}";
